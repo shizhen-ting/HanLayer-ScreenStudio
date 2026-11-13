@@ -237,7 +237,7 @@ Screen Studio 是 Electron 应用。汉化过程：
 | `app-src/` | 工具本体的 Swift 源码（`AppMain.swift`、`Engine.swift`）与图标源文件 |
 | `engine/` | 汉化引擎 `localize.py`，以及 asar 解包 / 打包工具 |
 | `app-src/Engine.swift` | 其中的 asar 读写部分已抽成独立库 [swift-asar](https://github.com/shizhen-ting/swift-asar)，可单独复用 |
-| `build/` | 2841 条词典 `dict.json`、动态文案规则 `patterns.json`、渲染层注入脚本 |
+| `build/` | 2847 条词典 `dict.json`、动态文案规则 `patterns.json`、渲染层注入脚本 |
 | `dmg/` | 安装盘配置与背景图 |
 | `apply.sh` | 官方更新后一条命令重新汉化（幂等，可重复跑） |
 
