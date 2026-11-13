@@ -184,6 +184,8 @@ tccutil reset Accessibility com.timpler.screenstudio
 
 **想变回英文？**
 点工具里的「恢复英文原版」，它会用自动备份把 App 还原。
+只要备份还在（`~/Library/Application Support/Screen Studio 汉化/` 里的 `*.orig`），
+**即使此时三项检查没通过，这个按钮也可以点**——它是救援通道，不受汉化条件限制。
 
 **⚠️ 卸载 Screen Studio 之前**
 请先点「恢复英文原版」，否则重装后可能出现「权限开关是开的但录不了」。
@@ -199,7 +201,7 @@ tccutil reset Accessibility com.timpler.screenstudio
 发布包 SHA-256（v1.1）：
 
 ```
-5c7200b9f28194a2791f183422683c505bf1bf0eda4701282c0d4450aaf23677
+8c9c3e6891efb25335bd7ce6fefb41ba07cead7a889b82e6bad769a94d97c3a2
 ```
 
 核对方式：

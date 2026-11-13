@@ -45,8 +45,34 @@ final class Runner: ObservableObject {
         }
     }
 
+    /// 本地是否留有可回滚的备份（「恢复英文原版」只依赖它，与能否开始汉化无关）
+    @Published var hasBackup = false
+    /// 内置引擎是否缺失（工具被不完整拷贝时会发生）
+    @Published var engineMissing = false
+
+    func refreshBackup() {
+        let dir = NSHomeDirectory() + "/Library/Application Support/Screen Studio 汉化"
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        hasBackup = files.contains { $0.hasSuffix(".orig") }
+    }
+
     func refreshChecks() {
         var list: [Check] = []
+        refreshBackup()
+
+        let engine = Bundle.main.bundlePath + "/Contents/Resources/engine/sszh-engine"
+        engineMissing = !FileManager.default.isExecutableFile(atPath: engine)
+        if engineMissing {
+            ready = false
+            list.append(Check(ok: false,
+                              title: "工具文件不完整",
+                              detail: "内置汉化引擎缺失，可能是拷贝时少了文件。请重新下载安装包，把整个 App 拖进「应用程序」",
+                              action: { NSWorkspace.shared.open(URL(string: "https://github.com/shizhen-ting/HanLayer-ScreenStudio/releases/latest")!) },
+                              actionTitle: "重新下载"))
+            checks = list
+            status = "还不能开始：工具文件不完整，请重新下载"
+            return
+        }
 
         // ① 是否安装
         if let app = ssPath {
@@ -638,8 +664,8 @@ struct ContentView: View {
                     .buttonStyle(SoftButtonStyle())
                 Button { runner.restore() } label: { Label("恢复英文原版", systemImage: "arrow.uturn.backward") }
                     .buttonStyle(SoftButtonStyle(tint: Color(red: 0.95, green: 0.55, blue: 0.2)))
-                    .disabled(runner.running || !runner.ready)
-                    .opacity(runner.running || !runner.ready ? 0.4 : 1)
+                    .disabled(runner.running || !runner.hasBackup)
+                    .opacity(runner.running || !runner.hasBackup ? 0.4 : 1)
                 Spacer()
                 Button("退出") { NSApp.terminate(nil) }
                     .buttonStyle(SoftButtonStyle())
