@@ -59,9 +59,9 @@ final class Runner: ObservableObject {
     /// 每次检查递增，用于丢弃过期的后台探测结果
     private var probeToken = 0
 
-    func applyPermissionRow(writable: Bool, quarantined: Bool, ranBefore: Bool) {
+    func applyPermissionRow(at idx: Int, writable: Bool, quarantined: Bool, ranBefore: Bool) {
         var list = checks
-        if let idx = list.lastIndex(where: { $0.title.hasPrefix("正在检查改写权限") || $0.title.hasPrefix("App 管理权限") }) {
+        if list.indices.contains(idx) {
             if ranBefore && writable {
                 list[idx] = Check(ok: true,
                                   title: "App 管理权限已开启",
@@ -149,6 +149,7 @@ final class Runner: ObservableObject {
             // ③ 能否改写（App 管理权限）——启动引擎探测要 1 秒左右，放后台做，先显示「检查中」
             probeToken += 1
             let token = probeToken
+            let permIndex = list.count
             list.append(Check(ok: false, info: true,
                               title: "正在检查改写权限…",
                               detail: "用内置引擎试写一次，通常不到 1 秒",
@@ -162,7 +163,8 @@ final class Runner: ObservableObject {
                 let quarantined = self.hasQuarantine(app)
                 DispatchQueue.main.async {
                     guard token == self.probeToken else { return }  // 已有更新的检查，丢弃这次结果
-                    self.applyPermissionRow(writable: writable, quarantined: quarantined, ranBefore: ranBefore)
+                    self.applyPermissionRow(at: permIndex, writable: writable,
+                                            quarantined: quarantined, ranBefore: ranBefore)
                 }
             }
             return
@@ -671,13 +673,21 @@ struct ContentView: View {
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(2)
                 }
-                ScrollView {
-                    Text(runner.log.isEmpty ? "等待开始…" : runner.log)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .textSelection(.enabled)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(runner.log.isEmpty ? "等待开始…" : runner.log)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .textSelection(.enabled)
+                        Color.clear.frame(height: 1).id("logEnd")
+                    }
+                    .onChange(of: runner.log) { _ in
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo("logEnd", anchor: .bottom)
+                        }
+                    }
                 }
                 .frame(height: 110)
                 .background(
