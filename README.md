@@ -223,7 +223,7 @@ Screen Studio 是 Electron 应用。汉化过程：
 
 ## 技术文章
 
-[**给 Electron 应用做外挂式汉化：不改原程序、随时可回滚**](docs/electron-i18n.md)
+[**给 Electron 应用做界面汉化：改写 asar + 重签名，随时可回滚**](docs/electron-i18n.md)
 
 六层注入、asar 重打包、重签名与 TCC 权限的完整踩坑记录。这套方法不依赖具体应用，
 可以套用到任何 Electron 程序上，不只是 Screen Studio。
