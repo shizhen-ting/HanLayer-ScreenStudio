@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# 发布包走 GitHub Releases，不进仓库
+*.dmg
+*.zip
+*.pkg
+
+# 编译与打包产物（源码与词典要提交，这些不提交）
+Localizer
+build/app.asar
+build/app.asar.unpacked/
+build/stage/
+extracted/
+node_modules/
+*.log
