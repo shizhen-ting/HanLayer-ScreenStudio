@@ -201,7 +201,7 @@ tccutil reset Accessibility com.timpler.screenstudio
 发布包 SHA-256（v1.1）：
 
 ```
-8c9c3e6891efb25335bd7ce6fefb41ba07cead7a889b82e6bad769a94d97c3a2
+00b83ffc332cdc8f70f9f4253100da56b19d8035f873445a47d2c3d3b1518b88
 ```
 
 核对方式：

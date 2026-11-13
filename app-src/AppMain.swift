@@ -56,6 +56,42 @@ final class Runner: ObservableObject {
         hasBackup = files.contains { $0.hasSuffix(".orig") }
     }
 
+    /// 每次检查递增，用于丢弃过期的后台探测结果
+    private var probeToken = 0
+
+    func applyPermissionRow(writable: Bool, quarantined: Bool, ranBefore: Bool) {
+        var list = checks
+        if let idx = list.lastIndex(where: { $0.title.hasPrefix("正在检查改写权限") || $0.title.hasPrefix("App 管理权限") }) {
+            if ranBefore && writable {
+                list[idx] = Check(ok: true,
+                                  title: "App 管理权限已开启",
+                                  detail: "可以直接改写 Screen Studio，不会弹密码",
+                                  action: { self.openAppManagement() },
+                                  actionTitle: "打开设置")
+            } else {
+                let why: String
+                if !ranBefore {
+                    why = "Screen Studio 启动过之后才能确认，先完成上面第二项"
+                } else if quarantined {
+                    why = "带有下载隔离标记：先执行 xattr -cr 去掉，或到「隐私与安全性 → App 管理」授权本程序"
+                } else {
+                    why = "到「隐私与安全性 → App 管理」把「汉层 HanLayer」打开，再点「重新检查」"
+                }
+                list[idx] = Check(ok: false,
+                                  title: "App 管理权限未开启",
+                                  detail: why,
+                                  action: { self.openAppManagement() },
+                                  actionTitle: "打开设置")
+            }
+        }
+        checks = list
+        ready = ranBefore && writable
+        if !running {
+            status = ready ? "准备就绪：点「开始汉化」即可"
+                           : "还不能开始：请先完成上面标黄的检查项"
+        }
+    }
+
     func refreshChecks() {
         var list: [Check] = []
         refreshBackup()
@@ -110,31 +146,26 @@ final class Runner: ObservableObject {
                                   actionTitle: "打开一次"))
             }
 
-            // ③ 能否改写（App 管理权限）
-            let writable = probeWritable(app)
-            let quarantined = hasQuarantine(app)
-            if ranBefore && writable {
-                list.append(Check(ok: true,
-                                  title: "App 管理权限已开启",
-                                  detail: "可以直接改写 Screen Studio，不会弹密码",
-                                  action: { self.openAppManagement() },
-                                  actionTitle: "打开设置"))
-            } else {
-                let why: String
-                if !ranBefore {
-                    why = "Screen Studio 启动过之后才能确认，先完成上面第二项"
-                } else if quarantined {
-                    why = "带有下载隔离标记：先执行 xattr -cr 去掉，或到「隐私与安全性 → App 管理」授权本程序"
-                } else {
-                    why = "到「隐私与安全性 → App 管理」把「汉层 HanLayer」打开，再点「重新检查」"
+            // ③ 能否改写（App 管理权限）——启动引擎探测要 1 秒左右，放后台做，先显示「检查中」
+            probeToken += 1
+            let token = probeToken
+            list.append(Check(ok: false, info: true,
+                              title: "正在检查改写权限…",
+                              detail: "用内置引擎试写一次，通常不到 1 秒",
+                              action: nil,
+                              actionTitle: ""))
+            checks = list
+            ready = false
+            status = "正在检查…"
+            DispatchQueue.global(qos: .userInitiated).async {
+                let writable = self.probeWritable(app)
+                let quarantined = self.hasQuarantine(app)
+                DispatchQueue.main.async {
+                    guard token == self.probeToken else { return }  // 已有更新的检查，丢弃这次结果
+                    self.applyPermissionRow(writable: writable, quarantined: quarantined, ranBefore: ranBefore)
                 }
-                list.append(Check(ok: false,
-                                  title: "App 管理权限未开启",
-                                  detail: why,
-                                  action: { self.openAppManagement() },
-                                  actionTitle: "打开设置"))
             }
-            ready = ranBefore && writable
+            return
         } else {
             ready = false
             list.append(Check(ok: false, title: "没找到 Screen Studio",
@@ -352,6 +383,8 @@ final class Runner: ObservableObject {
 
     func finish(_ restoreMode: Bool) {
         status = restoreMode ? "完成：已恢复英文原版" : "完成：界面已恢复简体中文"
+        // 汉化刚生成了备份，恢复按钮应当立刻可用，不必让用户再点一次「重新检查」
+        refreshChecks()
         let a = NSAlert()
         a.messageText = restoreMode ? "已恢复英文原版" : "汉化完成"
         a.informativeText = restoreMode
