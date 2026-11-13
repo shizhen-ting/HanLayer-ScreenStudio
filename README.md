@@ -115,10 +115,16 @@ xattr -dr com.apple.quarantine "/Applications/汉层 HanLayer.app"
 
 ### 第 4 步 · 点「开始汉化」
 
-确认两项检查都打勾——「已找到 Screen Studio」和「App 管理权限已开启」。
+三项检查全部打勾才可以开始：
 
-> 第二项显示橙色警告时，点它右侧的「打开设置」，
-> 在「隐私与安全性 → App 管理」里把「汉层 HanLayer」打开，回来点「重新检查」即可。
+| 检查项 | 条件 |
+| --- | --- |
+| 已找到 Screen Studio | 装好并在 `/Applications` 里 |
+| Screen Studio 已启动过 | 至少双击打开过一次（系统要完成注册，权限才可判定） |
+| App 管理权限已开启 | 工具能实际写入 Screen Studio |
+
+任何一项显示黄色叹号时，右下角「开始汉化」会保持灰色不可点。
+每项右侧都有对应的按钮——「选择位置…」「打开一次」「打开设置」，处理完点「重新检查」即可。
 
 然后点右下角「**开始汉化**」，进度条走完约 5～10 秒。
 
@@ -193,7 +199,7 @@ tccutil reset Accessibility com.timpler.screenstudio
 发布包 SHA-256（v1.1）：
 
 ```
-e1ed3557f84b3f096d59f648ac426e6f378ce9879977269c04542ff748af2bd9
+5c7200b9f28194a2791f183422683c505bf1bf0eda4701282c0d4450aaf23677
 ```
 
 核对方式：

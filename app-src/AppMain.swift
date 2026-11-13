@@ -47,6 +47,8 @@ final class Runner: ObservableObject {
 
     func refreshChecks() {
         var list: [Check] = []
+
+        // ① 是否安装
         if let app = ssPath {
             let info = NSDictionary(contentsOfFile: app + "/Contents/Info.plist")
             appVersion = info?["CFBundleShortVersionString"] as? String ?? "未知版本"
@@ -65,16 +67,27 @@ final class Runner: ObservableObject {
                                   action: { NSWorkspace.shared.open(URL(string: "https://screen.studio")!) },
                                   actionTitle: "查看官网"))
             }
-            // 用「实际能不能写进去」来判断，而不是猜系统开关。
-            // 但刚安装、没启动过的 App 保护还没生效，结果不可靠，单独提示。
+
+            // ② 是否启动过（启动后系统保护才生效，权限判断才有意义）
+            let ranBefore = hasRunBefore(app)
+            if ranBefore {
+                list.append(Check(ok: true,
+                                  title: "Screen Studio 已启动过",
+                                  detail: "系统已完成注册，可以判断权限状态",
+                                  action: { NSWorkspace.shared.open(URL(fileURLWithPath: app)) },
+                                  actionTitle: "打开"))
+            } else {
+                list.append(Check(ok: false,
+                                  title: "Screen Studio 还没启动过",
+                                  detail: "先双击打开一次它，系统完成注册后再点「重新检查」",
+                                  action: { NSWorkspace.shared.open(URL(fileURLWithPath: app)) },
+                                  actionTitle: "打开一次"))
+            }
+
+            // ③ 能否改写（App 管理权限）
             let writable = probeWritable(app)
             let quarantined = hasQuarantine(app)
-            let ranBefore = hasRunBefore(app)
-            // 这一项衡量的是「工具能不能改写 Screen Studio」，而不是系统里的开关状态。
-            // 系统不提供该开关的查询接口，且对本类自有 App 未必生效——用实测结果说话最可靠。
-            // 判断标准只有一条：能不能真的写进去。
-            // 未启动过时系统保护不生效、结果不可靠，同样按「未开启」处理——不放行。
-            if writable && ranBefore {
+            if ranBefore && writable {
                 list.append(Check(ok: true,
                                   title: "App 管理权限已开启",
                                   detail: "可以直接改写 Screen Studio，不会弹密码",
@@ -83,7 +96,7 @@ final class Runner: ObservableObject {
             } else {
                 let why: String
                 if !ranBefore {
-                    why = "Screen Studio 还没打开过，系统保护尚未生效，无法确认权限。先打开一次，再点「重新检查」"
+                    why = "Screen Studio 启动过之后才能确认，先完成上面第二项"
                 } else if quarantined {
                     why = "带有下载隔离标记：先执行 xattr -cr 去掉，或到「隐私与安全性 → App 管理」授权本程序"
                 } else {
@@ -95,13 +108,23 @@ final class Runner: ObservableObject {
                                   action: { self.openAppManagement() },
                                   actionTitle: "打开设置"))
             }
-            ready = writable && ranBefore
+            ready = ranBefore && writable
         } else {
             ready = false
             list.append(Check(ok: false, title: "没找到 Screen Studio",
                               detail: "默认找「应用程序」文件夹；装在别处就手动选，没装过就去官网下载",
                               action: { self.pickApp() },
                               actionTitle: "选择位置…"))
+            list.append(Check(ok: false,
+                              title: "Screen Studio 还没启动过",
+                              detail: "装好并打开一次之后再检查",
+                              action: { NSWorkspace.shared.open(URL(string: "https://screen.studio")!) },
+                              actionTitle: "去官网"))
+            list.append(Check(ok: false,
+                              title: "App 管理权限未开启",
+                              detail: "装好 Screen Studio 后会自动检测；也可以先到「隐私与安全性 → App 管理」把本程序打开",
+                              action: { self.openAppManagement() },
+                              actionTitle: "打开设置"))
         }
         checks = list
         if !running {
@@ -481,14 +504,23 @@ struct PrimaryPurpleButtonStyle: ButtonStyle {
     }
 }
 
+/// 测量 SwiftUI 内容的理想高度
+struct ContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// 首帧把窗口放到屏幕中间；高度交由内容测量后调整
 struct WindowSizer: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let v = NSView()
         DispatchQueue.main.async {
             if let w = v.window {
-                w.setContentSize(NSSize(width: 680, height: 690))
-                w.center()
                 w.title = "汉层 HanLayer"
+                w.styleMask.remove(.resizable)
+                w.center()
             }
         }
         return v
@@ -623,8 +655,26 @@ struct ContentView: View {
         }
         .padding(18)
         .frame(width: 680)
+        .fixedSize(horizontal: false, vertical: true)
         .background(Color(nsColor: .windowBackgroundColor))
         .background(WindowSizer())
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
+            }
+        )
+        .onPreferenceChange(ContentHeightKey.self) { h in
+            guard h > 120, let w = NSApp.windows.first else { return }
+            let target = ceil(h)
+            let current = w.contentLayoutRect.height
+            guard abs(current - target) > 1 || abs(w.frame.width - 680) > 1 else { return }
+            var f = w.frame
+            let delta = target - current
+            f.size.height += delta
+            f.origin.y -= delta
+            f.size.width = 680 + (w.frame.width - w.contentLayoutRect.width)
+            w.setFrame(f, display: true)
+        }
         .onAppear { runner.refreshChecks() }
     }
 }
