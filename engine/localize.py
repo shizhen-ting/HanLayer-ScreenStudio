@@ -172,20 +172,34 @@ def has_hardened_runtime(app):
 
 
 def sign_app(app):
+    """重签名。
+
+    唯一必须遵守的规则：**不要加 `--options runtime`**。
+
+    hardened runtime 要求签名链锚定到受信任的开发者身份。本地自签名证书满足不了，
+    带上 runtime 后 amfid 会拒绝主程序：
+    "The file is adhoc signed or signed by an unknown certificate chain"，App 启动即退出。
+
+    去掉 runtime 后，`--deep` 完整重签（含嵌套框架）反而能稳定运行——
+    只签外层会导致框架无法映射，崩溃信息是 "Library missing"。
+    """
     run(['xattr', '-cr', app])
+    kc = os.path.expanduser('~/Library/Keychains/login.keychain-db')
+
+    def sign(identity):
+        args = ['codesign', '--force', '--deep', '--sign', identity]
+        if identity != '-':
+            args += ['--keychain', kc]
+        args.append(app)
+        return run(args)
+
     if ensure_identity():
-        r = run(['codesign', '--force', '--deep', '--sign', IDENTITY, '--keychain',
-                 os.path.expanduser('~/Library/Keychains/login.keychain-db'),
-                 '--options', 'runtime', '--entitlements',
-                 os.path.join(ASSETS, 'entitlements.plist'), app])
+        r = sign(IDENTITY)
         if r.returncode == 0:
             return True
         log('   本地证书签名失败，改用 ad-hoc：' + (r.stderr or '').strip()[:120])
-    if has_hardened_runtime(app):
-        log('   警告：签名身份无效且该版本开启了 hardened runtime，ad-hoc 重签后可能无法启动')
-    r = run(['codesign', '--force', '--deep', '--sign', '-', '--options', 'runtime',
-             '--entitlements', os.path.join(ASSETS, 'entitlements.plist'), app])
-    return r.returncode == 0
+
+    return sign('-').returncode == 0
 
 
 def find_executables(root):
@@ -283,6 +297,20 @@ def main():
     if args and args[0] == '--restore':
         restore(os.path.abspath(args[1]) if len(args) > 1 else DEFAULT_APP)
         return
+    # --check：只做写入检查，供 GUI 判断「能否改写」
+    # 必须由引擎自己来测——它和真正汉化时是同一个进程身份，
+    # 而 GUI 里用 Swift 测出来的结果可能不同（TCC 按进程归属判定）。
+    if args and args[0] == '--check':
+        target = os.path.abspath(args[1]) if len(args) > 1 else DEFAULT_APP
+        probe = os.path.join(target, 'Contents', 'Resources', '.zh-write-test')
+        try:
+            with open(probe, 'w') as f:
+                f.write('x')
+            os.remove(probe)
+        except (PermissionError, OSError):
+            sys.exit(2)
+        sys.exit(0)
+
     app = args[0] if args else DEFAULT_APP
     app = os.path.abspath(app)
     if not os.path.isdir(app):
@@ -292,13 +320,9 @@ def main():
     if not os.path.isfile(asar):
         die('这个 app 里没有 app.asar，可能不是 Screen Studio')
 
-    # 前置检查：环境不具备重签条件时，先别动原文件
-    if has_hardened_runtime(app) and not identity_is_valid():
-        die('这个版本的 Screen Studio 开启了 hardened runtime，\n'
-            '  但本机没有可用的代码签名身份（只有 ad-hoc）。\n'
-            '  ad-hoc 重签会被 amfid 拒绝，App 启动即退出。\n\n'
-            '  解决办法：在「钥匙串访问」中把证书\n'
-            '  「Screen Studio Chinese Localizer」设为「始终信任」，再重新运行。')
+    # 说明：不再做 hardened runtime 前置检查。
+    # 重签名已经不带 --options runtime，自签名证书足够用；
+    # 之前的检查依赖在 GUI 环境下运行外部命令，会误判成「没有身份」而挡住正常流程。
 
     step(1, '读取词典')
     with open(os.path.join(ASSETS, 'dict.json'), encoding='utf-8') as f:
@@ -323,6 +347,7 @@ def main():
         step(3, '注入界面翻译层')
         dist = os.path.join(stage, 'dist')
         de = os.path.join(stage, 'dist-electron')
+        patched = []
         with open(os.path.join(dist, 'zh.js'), 'w', encoding='utf-8') as f:
             f.write(prelude + core)
         html_path = os.path.join(dist, 'index.html')
@@ -330,6 +355,7 @@ def main():
         html = re.sub(r'\s*<script src="\./zh\.js"></script>', '', html)
         html = html.replace('</head>', '    <script src="./zh.js"></script>\n  </head>')
         open(html_path, 'w', encoding='utf-8').write(html)
+        patched += ['dist/zh.js', 'dist/index.html']
 
         step(4, '注入菜单与弹层翻译')
         with open(os.path.join(de, 'zh-renderer.js'), 'w', encoding='utf-8') as f:
@@ -337,18 +363,21 @@ def main():
         main_dict = {re.sub(r'\s+', ' ', k).strip(): v for k, v in dic.items()}
         with open(os.path.join(de, 'zh-dict.json'), 'w', encoding='utf-8') as f:
             json.dump(main_dict, f, ensure_ascii=False)
+        patched += ['dist-electron/zh-renderer.js', 'dist-electron/zh-dict.json']
 
         idx_path = os.path.join(de, 'index.js')
         idx = open(idx_path, encoding='utf-8').read()
         idx = strip_block(idx, MARK_MAIN_S, MARK_MAIN_E)
         open(idx_path, 'w', encoding='utf-8').write(
             MARK_MAIN_S + '\n' + shim + '\n' + MARK_MAIN_E + '\n' + idx)
+        patched.append('dist-electron/index.js')
 
         pre_path = os.path.join(de, 'preload.js')
         pre = open(pre_path, encoding='utf-8').read()
         pre = strip_block(pre, MARK_PRE_S, MARK_PRE_E)
         open(pre_path, 'w', encoding='utf-8').write(
             pre + '\n' + MARK_PRE_S + '\n' + prelude + core + '\n' + MARK_PRE_E + '\n')
+        patched.append('dist-electron/preload.js')
 
         step(5, '恢复可执行权限')
         for p in find_executables(os.path.join(stage, 'bin')):
@@ -367,7 +396,16 @@ def main():
                 f.write('x')
             os.remove(probe)
         except PermissionError:
-            die('需要管理员权限：系统不允许当前程序修改 Screen Studio.app')
+            try:
+                open_as_user(app)  # 占位：确保随后能打开设置
+            except Exception:
+                pass
+            run(['open', 'x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles'])
+            die('系统不允许本程序修改 Screen Studio.app。\n\n'
+                '  这是 macOS 的「App 管理」保护：只有被授权的 App 才能改别的 App。\n\n'
+                '  解决办法：在刚打开的「隐私与安全性 → App 管理」列表里\n'
+                '  把「汉层 HanLayer」打开，然后回到工具点「开始汉化」。\n\n'
+                '  如果列表里没有它，点下面的「+」手动添加 /Applications/汉层 HanLayer.app')
 
         step(7, '备份原始文件')
         home = os.path.expanduser('~')
@@ -447,6 +485,10 @@ def main():
         open_as_user(app)
         launch_app(app)
         log('完成：界面已恢复简体中文。')
+        log('体检：词典 %d 条 · 注入文件 %d 个 · Screen Studio %s' %
+            (len(dic), len(patched), ver))
+        if len(dic) < 1000:
+            log('提示：词典条目异常偏少，可能使用了损坏的安装包')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

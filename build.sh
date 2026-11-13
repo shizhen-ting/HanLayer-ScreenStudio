@@ -37,53 +37,65 @@ echo "  引擎    $(ls -lh "$ENGINE" | awk '{print $5}')"
 
 # ---------- 1. 编译 ----------
 say "编译 Swift"
+# 词典条目数写进 App（界面显示用），避免与 dict.json 不一致
+ENTRIES=$(python3 -c "import json,io;print(len(json.load(io.open('build/dict.json',encoding='utf-8'))))")
+python3 - "$ENTRIES" <<'PYEOF'
+import io, re, sys
+n = sys.argv[1]
+p = 'app-src/AppMain.swift'
+s = io.open(p, encoding='utf-8').read()
+s2 = re.sub(r'static let entries = \d+', 'static let entries = ' + n, s, count=1)
+if s2 != s:
+    io.open(p, 'w', encoding='utf-8').write(s2)
+    print("  词典条数已同步到界面常量:", n)
+PYEOF
+
 swiftc -O -o "$R/build/Localizer" \
   "$R/app-src/AppMain.swift" \
   "$R/app-src/Engine.swift"
 echo "  $(ls -lh "$R/build/Localizer" | awk '{print $5}')"
 
-# ---------- 2. 组装 App 包 ----------
+# ---------- 2. 组装 App 包（在 /tmp 完成，避开 Finder 写回扩展属性）----------
 say "组装 App 包"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/engine"
+STAGE="/tmp/sszh-app/汉层 HanLayer.app"
+rm -rf /tmp/sszh-app
+mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources/engine"
 
-cp "$R/build/Localizer"                  "$APP/Contents/MacOS/Localizer"
-chmod 755                                "$APP/Contents/MacOS/Localizer"
-cp "$R/app-src/icon-hanlayer.icns"       "$APP/Contents/Resources/icon.icns"
-cp "$R/app-src/Info.plist"               "$APP/Contents/Info.plist"
-cp -R "$R/build/zh-Hans.lproj"           "$APP/Contents/Resources/"
-cp "$ENGINE"                             "$APP/Contents/Resources/engine/sszh-engine"
-chmod 755                                "$APP/Contents/Resources/engine/sszh-engine"
+cp "$R/build/Localizer"                  "$STAGE/Contents/MacOS/Localizer"
+chmod 755                                "$STAGE/Contents/MacOS/Localizer"
+cp "$R/app-src/icon-hanlayer.icns"       "$STAGE/Contents/Resources/icon.icns"
+cp "$R/app-src/Info.plist"               "$STAGE/Contents/Info.plist"
+cp -R "$R/build/zh-Hans.lproj"           "$STAGE/Contents/Resources/"
+cp "$ENGINE"                             "$STAGE/Contents/Resources/engine/sszh-engine"
+chmod 755                                "$STAGE/Contents/Resources/engine/sszh-engine"
 
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$STAGE/Contents/Info.plist"
 echo "  版本 ${VERSION}，含图标 / zh-Hans / 引擎"
 
 # ---------- 3. 签名 ----------
 say "重签名"
-find "$APP" -name '.DS_Store' -delete 2>/dev/null || true
-xattr -cr "$APP"
-xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
-rm -rf "$APP/Contents/_CodeSignature"
-# Finder 有时会在签名瞬间写回 FinderInfo，失败就清理后重试一次
+find "$STAGE" -name '.DS_Store' -delete 2>/dev/null || true
 sign_ok=0
-for attempt in 1 2 3; do
-  if codesign --force --deep --sign - --identifier "com.local.ss-zh-localizer" "$APP" 2>/tmp/sign_err.txt; then
+for attempt in $(seq 1 6); do
+  xattr -d com.apple.FinderInfo "$STAGE" 2>/dev/null || true
+  xattr -cr "$STAGE" 2>/dev/null || true
+  if codesign --force --deep --sign - --identifier "com.local.ss-zh-localizer" "$STAGE" 2>/tmp/sign_err.txt; then
     sign_ok=1; break
   fi
-  if grep -q 'detritus' /tmp/sign_err.txt; then
-    echo "  清理扩展属性后重试（第 $attempt 次）"
-    xattr -cr "$APP"
-    xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
-    find "$APP" -name '.DS_Store' -delete 2>/dev/null || true
-    sleep 1
-  else
-    cat /tmp/sign_err.txt; break
-  fi
+  sleep 0.3
 done
+if [ "$sign_ok" != "1" ]; then
+  cat /tmp/sign_err.txt 2>/dev/null
+  die "签名失败"
+fi
 rm -f /tmp/sign_err.txt
-[ "$sign_ok" = "1" ] || die "签名失败"
-codesign --verify --deep --strict "$APP"
+codesign --verify --deep --strict "$STAGE"
 echo "  ✓ 签名校验通过"
+
+# 把签好的 App 搬回工作目录（此时已带合法签名，不再重签）
+rm -rf "$APP"
+mkdir -p "$(dirname "$APP")"
+ditto "$STAGE" "$APP"
 
 # ---------- 4. 打包 DMG ----------
 say "打包 DMG"

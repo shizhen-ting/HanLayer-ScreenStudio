@@ -1,9 +1,18 @@
 import SwiftUI
 import AppKit
 
+enum DictInfo {
+    /// 词典对应的 Screen Studio 版本
+    static let target = "4.1.0"
+    /// 词典条目数，随每次发版更新
+    static let entries = 2847
+}
+
 struct Check: Identifiable {
     let id = UUID()
     var ok: Bool
+    /// 中性提示（灰蓝色），用于「暂时无法判断」的状态
+    var info: Bool = false
     var title: String
     var detail: String
     var action: (() -> Void)? = nil
@@ -13,6 +22,8 @@ struct Check: Identifiable {
 final class Runner: ObservableObject {
     @Published var running = false
     @Published var status = "准备就绪：点「开始汉化」即可"
+    /// 所有前置条件是否满足，不满足则禁用汉化/还原按钮
+    @Published var ready = false
     @Published var log = ""
     @Published var checks: [Check] = []
     @Published var appVersion = ""
@@ -39,34 +50,64 @@ final class Runner: ObservableObject {
         if let app = ssPath {
             let info = NSDictionary(contentsOfFile: app + "/Contents/Info.plist")
             appVersion = info?["CFBundleShortVersionString"] as? String ?? "未知版本"
-            list.append(Check(ok: true, title: "已找到 Screen Studio", detail: appVersion,
+            let base = appVersion.split(separator: "-").first.map(String.init) ?? appVersion
+            let matched = (base == DictInfo.target)
+            list.append(Check(ok: true, title: "已找到 Screen Studio",
+                              detail: matched
+                                ? "\(appVersion) · 词典 \(DictInfo.entries) 条，版本匹配"
+                                : "\(appVersion) · 词典针对 \(DictInfo.target)",
                               action: { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: app)]) },
                               actionTitle: "在访达中显示"))
+            if !matched {
+                list.append(Check(ok: false,
+                                  title: "版本与词典不一致",
+                                  detail: "汉化仍可用，但 Screen Studio \(base) 与词典的 \(DictInfo.target) 不同，新增或改动的界面可能仍是英文",
+                                  action: { NSWorkspace.shared.open(URL(string: "https://screen.studio")!) },
+                                  actionTitle: "查看官网"))
+            }
+            // 用「实际能不能写进去」来判断，而不是猜系统开关。
+            // 但刚安装、没启动过的 App 保护还没生效，结果不可靠，单独提示。
             let writable = probeWritable(app)
-            list.append(Check(ok: writable,
-                              title: writable ? "App 管理权限已开启" : "App 管理权限未开启",
-                              detail: writable ? "可以直接改写 Screen Studio，不会弹密码"
-                                               : "点「打开设置」去勾选本程序，以后就不弹密码；不勾也可以，会要求输入 Mac 密码",
-                              action: { self.openAppManagement() },
-                              actionTitle: "打开设置"))
+            let quarantined = hasQuarantine(app)
+            let ranBefore = hasRunBefore(app)
+            // 这一项衡量的是「工具能不能改写 Screen Studio」，而不是系统里的开关状态。
+            // 系统不提供该开关的查询接口，且对本类自有 App 未必生效——用实测结果说话最可靠。
+            // 判断标准只有一条：能不能真的写进去。
+            // 未启动过时系统保护不生效、结果不可靠，同样按「未开启」处理——不放行。
+            if writable && ranBefore {
+                list.append(Check(ok: true,
+                                  title: "App 管理权限已开启",
+                                  detail: "可以直接改写 Screen Studio，不会弹密码",
+                                  action: { self.openAppManagement() },
+                                  actionTitle: "打开设置"))
+            } else {
+                let why: String
+                if !ranBefore {
+                    why = "Screen Studio 还没打开过，系统保护尚未生效，无法确认权限。先打开一次，再点「重新检查」"
+                } else if quarantined {
+                    why = "带有下载隔离标记：先执行 xattr -cr 去掉，或到「隐私与安全性 → App 管理」授权本程序"
+                } else {
+                    why = "到「隐私与安全性 → App 管理」把「汉层 HanLayer」打开，再点「重新检查」"
+                }
+                list.append(Check(ok: false,
+                                  title: "App 管理权限未开启",
+                                  detail: why,
+                                  action: { self.openAppManagement() },
+                                  actionTitle: "打开设置"))
+            }
+            ready = writable && ranBefore
         } else {
+            ready = false
             list.append(Check(ok: false, title: "没找到 Screen Studio",
                               detail: "默认找「应用程序」文件夹；装在别处就手动选，没装过就去官网下载",
                               action: { self.pickApp() },
                               actionTitle: "选择位置…"))
-            list.append(Check(ok: false, title: "还没装 Screen Studio？",
-                              detail: "可以去官网下载安装包，装好再回来点「重新检查」",
-                              action: { NSWorkspace.shared.open(URL(string: "https://screen.studio")!) },
-                              actionTitle: "打开官网"))
         }
-        list.append(Check(ok: true,
-                          title: "汉化后 Screen Studio 需重新授权",
-                          detail: "屏幕录制 / 辅助功能 / 摄像头 —— 签名变了，系统会重新弹窗",
-                          action: { self.openPane("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") },
-                          actionTitle: "打开屏幕录制设置"))
-        list.append(Check(ok: true, title: "运行环境已内置",
-                          detail: "不需要另外装 Python，汉化引擎打包在工具里"))
         checks = list
+        if !running {
+            status = ready ? "准备就绪：点「开始汉化」即可"
+                           : "还不能开始：请先完成上面标黄的检查项"
+        }
     }
 
     func pickApp() {
@@ -86,13 +127,57 @@ final class Runner: ObservableObject {
         }
     }
 
+    /// 检测能否改写 Screen Studio。
+    ///
+    /// 关键：必须让**引擎自己**去测。引擎在真正汉化时由本 App 启动，
+    /// 与 Swift 进程同属一个 TCC 归属；用 Swift 直接写文件测出的结果可能与实际不符。
     func probeWritable(_ app: String) -> Bool {
-        let probe = app + "/Contents/Resources/.sszh-probe"
+        let engine = Bundle.main.bundlePath + "/Contents/Resources/engine/sszh-engine"
+        guard FileManager.default.isExecutableFile(atPath: engine) else { return false }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: engine)
+        p.arguments = ["--check", app]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
         do {
-            try "x".write(toFile: probe, atomically: true, encoding: .utf8)
-            try? FileManager.default.removeItem(atPath: probe)
+            try p.run()
+            p.waitUntilExit()
+            return p.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    /// 判断 App 是否启动过。
+    ///
+    /// 刚拷进 /Applications、从未打开过的 App，macOS 还没完成注册，
+    /// 「App 管理」保护尚未生效——此时写入测试会错误地通过。
+    /// 用「是否留下偏好设置或应用数据」来判断是否已经跑过一次。
+    func hasRunBefore(_ app: String) -> Bool {
+        // 用系统记录的「最近使用时间」判断这一份拷贝有没有被打开过。
+        // 它随每次启动更新，且重装 App 后会重置——比看偏好设置文件可靠
+        // （偏好设置卸载后不会删除，会让人误以为启动过）。
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/mdls")
+        p.arguments = ["-raw", "-name", "kMDItemLastUsedDate", app]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        let out = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if out.isEmpty || out == "(null)" || out == "null" { return false }
+        return true
+    }
+
+    /// 检查 App 是否带下载隔离标记（从浏览器下载的 zip 解压出来就会有）
+    func hasQuarantine(_ app: String) -> Bool {
+        let paths = [app, app + "/Contents/Resources/app.asar", app + "/Contents/MacOS"]
+        for p in paths where getxattr(p, "com.apple.quarantine", nil, 0, 0, 0) > 0 {
             return true
-        } catch { return false }
+        }
+        return false
     }
 
     func pythonWorks() -> Bool {
@@ -142,16 +227,6 @@ final class Runner: ObservableObject {
             if a.runModal() != .alertFirstButtonReturn { return }
         }
 
-        if checks.contains(where: { $0.title.contains("App 管理权限未开启") }) {
-            let a = NSAlert()
-            a.messageText = "App 管理权限未开启"
-            a.informativeText = "继续会弹出要求输入 Mac 登录密码的窗口，输入后同样能完成汉化。\n想让以后一键无密码：去「系统设置 → 隐私与安全性 → App 管理」勾选「汉层 HanLayer」。"
-            a.addButton(withTitle: "继续（输密码）")
-            a.addButton(withTitle: "我先去开权限")
-            if a.runModal() != .alertFirstButtonReturn {
-                openAppManagement(); return
-            }
-        }
         runEngine([app], restoreMode: false)
     }
 
@@ -318,9 +393,13 @@ struct CheckRow: View {
     let check: Check
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: check.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+            Image(systemName: check.info ? "info.circle.fill"
+                                          : (check.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"))
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(check.ok ? Color(red: 0.2, green: 0.72, blue: 0.42) : Color(red: 0.95, green: 0.6, blue: 0.15))
+                .foregroundColor(check.info
+                                 ? Color(nsColor: .secondaryLabelColor)
+                                 : (check.ok ? Color(red: 0.2, green: 0.72, blue: 0.42)
+                                             : Color(red: 0.95, green: 0.6, blue: 0.15)))
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 3) {
                 Text(check.title).font(.system(size: 13, weight: .semibold))
@@ -349,6 +428,59 @@ struct CheckRow: View {
     }
 }
 
+struct CompactPurpleButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let base = isEnabled ? 0.22 : 0.10
+        let press = configuration.isPressed && isEnabled
+        return configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(Color.purple.opacity(isEnabled ? 1 : 0.5))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.purple.opacity(press ? base + 0.14 : base))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.purple.opacity(isEnabled ? 0.32 : 0.16), lineWidth: 1)
+            )
+            .scaleEffect(press ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+struct PrimaryPurpleButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    /// 禁用态：偏灰、压暗的紫，仍然能看出是紫色系
+    private var fillColor: Color {
+        if isEnabled { return Color.purple }
+        return Color(red: 0.30, green: 0.24, blue: 0.36).opacity(0.85)
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(.white.opacity(isEnabled ? 1 : 0.5))
+            .padding(.horizontal, 20)
+            .padding(.vertical, 9)
+            .frame(minWidth: 108)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isEnabled && configuration.isPressed ? Color.purple.opacity(0.82) : fillColor)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.purple.opacity(isEnabled ? 0 : 0.16), lineWidth: 1)
+            )
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 struct WindowSizer: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let v = NSView()
@@ -365,21 +497,25 @@ struct WindowSizer: NSViewRepresentable {
 }
 
 struct ContentView: View {
+    /// App 图标：优先读取 bundle 内的 icns，回退到系统提供的应用图标
+    static var appIcon: NSImage {
+        if let path = Bundle.main.path(forResource: "icon", ofType: "icns"),
+           let image = NSImage(contentsOfFile: path) {
+            return image
+        }
+        return NSApp.applicationIconImage
+    }
+
     @ObservedObject var runner = Runner()
 
     var header: some View {
         HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .fill(LinearGradient(colors: [Color(red: 0.55, green: 0.40, blue: 1.0),
-                                                  Color(red: 0.33, green: 0.16, blue: 0.78)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                Text("汉层")
-                    .font(.system(size: 21, weight: .bold))
-                    .foregroundColor(.white)
-            }
-            .frame(width: 62, height: 62)
-            .shadow(color: Color.purple.opacity(0.35), radius: 10, x: 0, y: 4)
+            // 直接使用 App 图标，保证与 Dock / 安装包里的图标比例完全一致
+            Image(nsImage: Self.appIcon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 96, height: 96)
+                .shadow(color: Color.purple.opacity(0.30), radius: 9, x: 0, y: 4)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("汉层 HanLayer")
@@ -414,15 +550,17 @@ struct ContentView: View {
             header
 
             HStack {
-                Text("运行前检查").font(.system(size: 12, weight: .semibold)).foregroundColor(.secondary)
+                Text("运行前检查")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundColor(.primary.opacity(0.9))
                 Spacer()
                 Button {
                     runner.refreshChecks()
                 } label: {
                     Label("重新检查", systemImage: "arrow.clockwise")
                 }
-                .buttonStyle(.borderless)
-                .font(.system(size: 11))
+                .buttonStyle(CompactPurpleButtonStyle())
+                .disabled(runner.running)
             }
 
             VStack(spacing: 8) {
@@ -468,7 +606,8 @@ struct ContentView: View {
                     .buttonStyle(SoftButtonStyle())
                 Button { runner.restore() } label: { Label("恢复英文原版", systemImage: "arrow.uturn.backward") }
                     .buttonStyle(SoftButtonStyle(tint: Color(red: 0.95, green: 0.55, blue: 0.2)))
-                    .disabled(runner.running)
+                    .disabled(runner.running || !runner.ready)
+                    .opacity(runner.running || !runner.ready ? 0.4 : 1)
                 Spacer()
                 Button("退出") { NSApp.terminate(nil) }
                     .buttonStyle(SoftButtonStyle())
@@ -476,14 +615,10 @@ struct ContentView: View {
                     runner.start()
                 } label: {
                     Text(runner.running ? "处理中…" : "开始汉化")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(minWidth: 92)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.purple)
-                .controlSize(.large)
+                .buttonStyle(PrimaryPurpleButtonStyle())
                 .keyboardShortcut(.defaultAction)
-                .disabled(runner.running)
+                .disabled(runner.running || !runner.ready)
             }
         }
         .padding(18)

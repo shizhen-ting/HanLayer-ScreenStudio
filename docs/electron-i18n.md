@@ -133,7 +133,7 @@ os.makedirs(os.path.join(res, 'zh-Hans.lproj'), exist_ok=True)
 
 ## 四、重签名：真正的坑在这里
 
-改完 asar 必须重新签名，否则应用起不来。这一过程中有四个坑，最后一个最难查。
+改完 asar 必须重新签名，否则应用起不来。这一过程中有五个坑，后两个最难查。
 
 ### 坑 1：`ElectronAsarIntegrity` 会让应用直接崩
 
@@ -161,15 +161,23 @@ def ensure_identity():
 ad-hoc（`codesign -s -`）每次签名产生的身份都不稳定，会导致**每次汉化都要重新授权**，
 体验极差。自建一张固定证书后，只有第一次需要授权。
 
-### 坑 3：`--deep` 会漏掉嵌套的二进制
+### 坑 3：`--deep` 该不该用，取决于你怎么签
 
-`codesign --deep` 在新版 macOS 上已被标记弃用，而且对深层嵌套的处理不完整。
-引擎目录里如果有 `.so`、helper 可执行文件，需要递归签名：
+`codesign --deep` 在文档里被标为弃用，很多文章建议改成手动递归签名。**但对 Electron 应用，
+只签最外层反而会崩**：
 
-```python
-for f in find_executables(root):        # 遍历出所有 Mach-O
-    run(['codesign', '--force', '--sign', IDENTITY, f])
 ```
+termination reason: Library missing
+```
+
+因为嵌套框架的签名与外壳不再一致，dyld 映射失败。实测对比：
+
+| 签名方式 | 结果 |
+| --- | --- |
+| `--deep` 完整重签 | ✅ 正常 |
+| 只签最外层 | ❌ 启动后 20 秒崩溃（Library missing） |
+
+所以对这类带大量 framework 的应用，**保留 `--deep`**。真正决定成败的是下一条。
 
 ### 坑 4：证书「存在」不等于「能用」
 
@@ -216,6 +224,38 @@ log show --last 2m --predicate 'eventMessage CONTAINS "amfid"' | tail
 
 **经验**：这类环境问题应当在动手改文件**之前**就检查。先跑一遍
 `security find-identity -v`，确认有可用身份再开始，比事后从一堆无关日志里反推要省事得多。
+
+### 坑 5：hardened runtime 与自签名证书不兼容（最容易误判的一条）
+
+给 `codesign` 加上 `--options runtime` 就会打开 hardened runtime。它要求签名链锚定到**受信任的开发者身份**，
+而外挂式汉化只能用本地自签名证书。两者冲突的直接后果：
+
+```
+amfid: .../MacOS/xxx not valid:
+"The file is adhoc signed or signed by an unknown certificate chain"
+```
+
+**症状极具误导性**：汉化流程全部成功、日志一切正常，但 App 一启动就退出，且系统里没有崩溃报告
+（是启动即被杀，不是崩溃）。如果只盯着自己的代码，会怀疑到注入逻辑上去。
+
+正确的做法是**重签名时不加 `--options runtime`**：
+
+```python
+run(['codesign', '--force', '--deep', '--sign', IDENTITY, app])   # 不要 --options runtime
+```
+
+去掉之后，自签名证书足以让 App 正常启动，TCC 权限也因为签名身份固定而不会每次重置。
+
+三者的关系可以这样记：
+
+| 组合 | 结果 |
+| --- | --- |
+| `--deep` + runtime | ❌ amfid 拒绝，启动即退 |
+| 只签外层 + runtime | ❌ 同样被拒 |
+| 只签外层，无 runtime | ⚠️ 能启动，随后 Library missing 崩溃 |
+| **`--deep`，无 runtime** | ✅ 稳定运行 |
+
+---
 
 ---
 

@@ -25,7 +25,7 @@
 
 | 版本 | 对应 Screen Studio | 说明 |
 | --- | --- | --- |
-| v1.1 | 4.1.0（build 5005） | 当前版本，词典 2841 条 |
+| v1.1 | 4.1.0（build 5005） | 当前版本，词典 2847 条 |
 
 > 汉化原理是运行时替换界面文案，**逻辑上不绑定版本**。Screen Studio 升级后仍可直接再点一次「开始汉化」；
 > 如果新版本多了新文案，那些句子会保留英文，其余照常汉化。
@@ -42,42 +42,38 @@
 
 ## 兼容性
 
-汉化靠「改 `app.asar` 后重新签名」实现，所以**受签名机制限制**，不同版本情况不同：
+汉化靠「改 `app.asar` 后重新签名」实现，**重签名的方式直接决定 App 能不能启动**。
 
 | Screen Studio | 情况 |
 | --- | --- |
 | 3.7.x | ✅ 可汉化 |
-| 4.1.0-5005 | ⚠️ 开启了 hardened runtime，**用 ad-hoc 重签会被系统拒绝**，需要本机存在受信任的签名身份 |
+| 4.1.0-5005 | ✅ 可汉化（v1.1 起已适配） |
 
-### 如果汉化后 Screen Studio 启动即退出
+### 重签名的硬性规则：不要加 hardened runtime
 
-系统日志里会有明确原因：
-
-```bash
-log show --last 2m --predicate 'eventMessage CONTAINS "amfid"' | tail
-```
-
-看到下面这句，就是签名身份不被信任：
+重签名时如果带上 `--options runtime`（hardened runtime），系统会拒绝启动：
 
 ```
 The file is adhoc signed or signed by an unknown certificate chain
 ```
 
-**工具会自动修复**：检测到证书存在但未被信任时，会用用户级信任设置把它加进去
-（`security add-trusted-cert`，不需要管理员密码）。修复后签名身份即可用。
+原因是 hardened runtime 要求签名链锚定到受信任的开发者身份，而本工具用的是本地自签名证书。
+**去掉 runtime 后，`--deep` 完整重签可以正常启动。** 工具已按这个规则实现，正常使用不会遇到。
 
-工具还会在改动任何文件**之前**检测环境，不满足就直接报错，不会把你的 App 改坏。
-已经汉化坏的，用「恢复英文原版」即可还原。
+如果仍然启动失败，先看系统日志确认原因：
+
+```bash
+log show --last 2m --predicate 'eventMessage CONTAINS "amfid"' | tail
+```
+
+> 另外：用「访达」双击启动比命令行 `open` 更可靠。命令行启动失败时，双击往往就正常。
 
 ### 汉化前请先确认原版能正常打开
 
-汉化只改界面文案，**不负责让 App 能运行**。如果原版 Screen Studio 本身就打不开，
-先解决这个问题再汉化，否则会误以为是汉化导致的。
+汉化只改界面文案，**不负责让 App 能运行**。装好原版后先双击打开，能正常显示再汉化，
+否则会把环境问题误判成汉化的锅。
 
-判断方法很简单：装好原版后先双击打开，能正常出现在屏幕上再汉化。
-
-如果原版打不开，先检查是不是安装状态不干净——用系统自带解压工具重新解压 zip，
-把 `/Applications` 里的旧副本彻底删除后再拷入，而不是覆盖安装。
+如果原版打不开：用系统自带解压工具重新解压 zip，把 `/Applications` 里的旧副本彻底删除后再拷入。
 
 ## 安装
 
@@ -119,7 +115,12 @@ xattr -dr com.apple.quarantine "/Applications/汉层 HanLayer.app"
 
 ### 第 4 步 · 点「开始汉化」
 
-确认四项检查都打勾，点右下角「**开始汉化**」，进度条走完约 5～10 秒。
+确认两项检查都打勾——「已找到 Screen Studio」和「App 管理权限已开启」。
+
+> 第二项显示橙色警告时，点它右侧的「打开设置」，
+> 在「隐私与安全性 → App 管理」里把「汉层 HanLayer」打开，回来点「重新检查」即可。
+
+然后点右下角「**开始汉化**」，进度条走完约 5～10 秒。
 
 ![第 4 步：点开始汉化](assets/step4-start.png)
 
@@ -156,6 +157,17 @@ xattr -dr com.apple.quarantine "/Applications/汉层 HanLayer.app"
 如果是整句被页面拆开导致的混排（例如「我同意 服务条款 and 隐私政策」），
 把截图发到 Issues，补一条词条就能修好。
 
+**提示「系统不允许本程序修改 Screen Studio.app」？**
+
+这是 macOS 的「App 管理」保护。两种解法，任选其一：
+
+```bash
+# 1) 去掉下载带来的隔离标记（最常见的原因）
+xattr -cr "/Applications/Screen Studio.app"
+```
+
+2) 系统设置 → 隐私与安全性 → App 管理 → 把「汉层 HanLayer」打开
+
 **权限开关是开的，但 Screen Studio 说没权限？**
 签名和系统记录对不上号，清掉旧记录再重新授权：
 ```bash
@@ -181,7 +193,7 @@ tccutil reset Accessibility com.timpler.screenstudio
 发布包 SHA-256（v1.1）：
 
 ```
-24448861836808ee3cfcb6ec893c33549b7c5ab0cb5678e9c63dc4b67eceb35e
+e1ed3557f84b3f096d59f648ac426e6f378ce9879977269c04542ff748af2bd9
 ```
 
 核对方式：
@@ -226,7 +238,7 @@ Screen Studio 是 Electron 应用。汉化过程：
 **一键构建**（编译 → 组装 → 签名 → 打包 DMG）：
 
 ```bash
-PYTHON=/path/to/python3 ./build.sh        # 默认版本号 1.1
+PYTHON=/path/to/python3 ./build.sh        # 默认 1.1
 PYTHON=/path/to/python3 ./build.sh 1.2    # 指定版本号
 ```
 
